@@ -843,7 +843,6 @@ def movie_detail(movie_id):
                 db.session.add(user_rating)
             db.session.commit()
             flash('Оценка сохранена', 'success')
-            # Выходим из карточки на главную
             return redirect(url_for('index'))
 
     all_ratings = Rating.query.filter_by(movie_id=movie.id).join(User).all()
@@ -866,6 +865,10 @@ def init_db():
     """Создаёт таблицы, если их ещё нет."""
     db.create_all()
 
+# ВАЖНО: вызываем init_db при импорте, чтобы gunicorn на Railway создал таблицы
+with app.app_context():
+    init_db()
+
 
 # ---------------------------
 # Точка входа
@@ -873,6 +876,4 @@ def init_db():
 
 if __name__ == '__main__':
     os.makedirs(os.path.join(BASE_DIR, 'static', 'uploads'), exist_ok=True)
-    with app.app_context():
-        init_db()
     app.run(debug=True)
