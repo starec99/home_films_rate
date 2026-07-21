@@ -768,7 +768,7 @@ def index():
       </div>
     </form>
 
-    <a href="{{ url_for('add_movie') }}" class="btn btn_SUCCESS mb-3">Добавить фильм</a>
+    <a href="{{ url_for('add_movie') }}" class="btn btn_success mb-3">Добавить фильм</a>
 
     <table class="table table-dark table-striped table-bordered align-middle">
       <thead>
