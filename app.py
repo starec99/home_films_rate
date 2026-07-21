@@ -52,6 +52,7 @@ class User(db.Model, UserMixin):
     username = db.Column(db.String(80), unique=True, nullable=False)
     display_name = db.Column(db.String(120), nullable=False)
     password_hash = db.Column(db.String(255), nullable=False)
+    is_admin = db.Column(db.Boolean, default=False, nullable=False)  # роль администратора
 
     def set_password(self, password: str):
         self.password_hash = generate_password_hash(password)
@@ -71,7 +72,6 @@ class Movie(db.Model):
     director = db.Column(db.String(255))
     poster = db.Column(db.String(255))  # имя файла обложки
 
-    # кто предложил фильм
     suggested_by_id = db.Column(db.Integer, db.ForeignKey('user.id'))
     suggested_by = db.relationship('User', backref='suggested_movies')
 
@@ -91,6 +91,23 @@ class Rating(db.Model):
 
     user = db.relationship('User', backref='ratings')
     movie = db.relationship('Movie', backref='ratings')
+
+
+class WishlistItem(db.Model):
+    """Элемент списка «хочу посмотреть», не связанный с таблицей Movie."""
+    id = db.Column(db.Integer, primary_key=True)
+    user_id = db.Column(db.Integer, db.ForeignKey('user.id'), nullable=False)
+
+    title = db.Column(db.String(255), nullable=False)
+    note = db.Column(db.Text)               # опционально: заметка
+    year = db.Column(db.String(10))        # опционально: год
+    director = db.Column(db.String(255))   # опционально: режиссёр
+
+    user = db.relationship('User', backref='wishlist_items')
+
+    __table_args__ = (
+        db.UniqueConstraint('user_id', 'title', name='uq_user_title_wishlist'),
+    )
 
 
 @login_manager.user_loader
@@ -120,6 +137,15 @@ def get_or_create_genre(name: str):
     g = Genre(name=name)
     db.session.add(g)
     return g
+
+
+def can_manage_movie(movie: Movie, user: User) -> bool:
+    """Проверка: может ли пользователь редактировать/удалять фильм."""
+    if not user.is_authenticated:
+        return False
+    if user.is_admin:
+        return True
+    return movie.suggested_by_id == user.id
 
 
 # ---------------------------
@@ -224,7 +250,105 @@ def logout():
 
 
 # ---------------------------
-# Профиль пользователя
+# Админ-панель пользователей
+# ---------------------------
+
+@app.route('/admin/users')
+@login_required
+def admin_users():
+    if not current_user.is_admin:
+        flash('Эта страница доступна только администраторам', 'danger')
+        return redirect(url_for('index'))
+
+    users = User.query.order_by(User.username).all()
+
+    template = """
+    {% extends "base.html" %}
+    {% block title %}Админ: пользователи{% endblock %}
+    {% block content %}
+    <div class="d-flex justify-content-between align-items-center mb-3">
+      <h2 class="mb-0">Админ-панель: пользователи</h2>
+      <a href="{{ url_for('index') }}" class="btn btn-outline-light btn-sm">На главную</a>
+    </div>
+
+    <table class="table table-dark table-striped table-bordered align-middle">
+      <thead>
+        <tr>
+          <th>ID</th>
+          <th>Логин</th>
+          <th>Имя</th>
+          <th>Роль</th>
+          <th>Действия</th>
+        </tr>
+      </thead>
+      <tbody>
+      {% for u in users %}
+        <tr>
+          <td>{{ u.id }}</td>
+          <td>{{ u.username }}</td>
+          <td>{{ u.display_name }}</td>
+          <td>
+            {% if u.is_admin %}
+              <span class="badge bg-success">Админ</span>
+            {% else %}
+              <span class="badge bg-secondary">Пользователь</span>
+            {% endif %}
+          </td>
+          <td>
+            {% if u.id != current_user.id %}
+              <form method="post"
+                    action="{{ url_for('toggle_admin', user_id=u.id) }}"
+                    class="d-inline">
+                {% if u.is_admin %}
+                  <button class="btn btn-sm btn-outline-warning">
+                    Убрать права админа
+                  </button>
+                {% else %}
+                  <button class="btn btn-sm btn-outline-success">
+                    Сделать админом
+                  </button>
+                {% endif %}
+              </form>
+            {% else %}
+              <small class="text-muted">Это вы</small>
+            {% endif %}
+          </td>
+        </tr>
+      {% endfor %}
+      </tbody>
+    </table>
+    {% endblock %}
+    """
+
+    return render_template_string(template, users=users)
+
+
+@app.route('/admin/users/<int:user_id>/toggle-admin', methods=['POST'])
+@login_required
+def toggle_admin(user_id):
+    if not current_user.is_admin:
+        flash('Эта операция доступна только администраторам', 'danger')
+        return redirect(url_for('index'))
+
+    user = User.query.get_or_404(user_id)
+
+    if user.id == current_user.id:
+        flash('Нельзя изменять свои собственные права через эту форму', 'info')
+        return redirect(url_for('admin_users'))
+
+    user.is_admin = not user.is_admin
+    db.session.commit()
+
+    if user.is_admin:
+        flash(f'Пользователь {user.username} теперь администратор', 'success')
+    else:
+        flash(f'У пользователя {user.username} убраны права администратора', 'info')
+
+    return redirect(url_for('admin_users'))
+
+
+# ---------------------------
+# Профиль пользователя + «хочу посмотреть»
 # ---------------------------
 
 @app.route('/user/<int:user_id>')
@@ -246,6 +370,13 @@ def user_profile(user_id):
     )
     ratings_count = Rating.query.filter_by(user_id=user.id).count()
 
+    wishlist_items = (
+        WishlistItem.query
+        .filter_by(user_id=user.id)
+        .order_by(WishlistItem.title.asc())
+        .all()
+    )
+
     template = """
     {% extends "base.html" %}
     {% block title %}Профиль {{ user.display_name }}{% endblock %}
@@ -256,13 +387,14 @@ def user_profile(user_id):
     </div>
 
     <p><strong>Логин:</strong> {{ user.username }}</p>
+    <p><strong>Роль:</strong> {% if user.is_admin %}Администратор{% else %}Обычный пользователь{% endif %}</p>
     <p><strong>Фильмов оценено:</strong> {{ ratings_count }}</p>
     <p><strong>Средний балл:</strong> {% if avg_score %}⭐ {{ '%.1f' % avg_score }}{% else %}—{% endif %}</p>
 
     <hr>
 
     <h4>Последние оценки</h4>
-    <ul class="list-group">
+    <ul class="list-group mb-4">
       {% for r in ratings %}
         <li class="list-group-item">
           <strong>{{ r.movie.title }}</strong> — {{ '%.1f' % r.score }}
@@ -275,6 +407,88 @@ def user_profile(user_id):
         <li class="list-group-item">Пока нет оценок</li>
       {% endif %}
     </ul>
+
+    <hr>
+
+    <h4>Хочу посмотреть</h4>
+    {% if current_user.id == user.id %}
+      <form method="post" action="{{ url_for('add_wishlist_item', user_id=user.id) }}" class="mb-3">
+        <div class="row g-2">
+          <div class="col-md-4">
+            <input type="text" name="title" class="form-control" placeholder="Название фильма" required>
+          </div>
+          <div class="col-md-2">
+            <input type="text" name="year" class="form-control" placeholder="Год">
+          </div>
+          <div class="col-md-3">
+            <input type="text" name="director" class="form-control" placeholder="Режиссёр">
+          </div>
+          <div class="col-md-3">
+            <input type="text" name="note" class="form-control" placeholder="Заметка">
+          </div>
+        </div>
+        <button class="btn btn-outline-light btn-sm mt-2">Добавить</button>
+      </form>
+    {% endif %}
+
+    <table class="table table-dark table-striped table-bordered align-middle">
+      <thead>
+        <tr>
+          <th>Название</th>
+          <th>Год</th>
+          <th>Режиссёр</th>
+          <th>Заметка</th>
+          <th>Действия</th>
+        </tr>
+      </thead>
+      <tbody>
+      {% for item in wishlist_items %}
+        <tr>
+          <td>{{ item.title }}</td>
+          <td>{{ item.year or '—' }}</td>
+          <td>{{ item.director or '—' }}</td>
+          <td>
+            {% if item.note %}
+              <small class="text-muted">{{ item.note }}</small>
+            {% else %}
+              —
+            {% endif %}
+          </td>
+          <td>
+            {% if current_user.id == user.id %}
+              <a href="{{ url_for('edit_wishlist_item', item_id=item.id) }}"
+                 class="btn btn-sm btn-outline-light me-1">
+                Редактировать
+              </a>
+
+              <form method="post"
+                    action="{{ url_for('delete_wishlist_item', item_id=item.id) }}"
+                    class="d-inline"
+                    onsubmit="return confirm('Удалить эту запись из «хочу посмотреть»?');">
+                <button class="btn btn-sm btn-outline-danger">Удалить</button>
+              </form>
+
+              <form method="post"
+                    action="{{ url_for('wishlist_to_movie', item_id=item.id) }}"
+                    class="d-inline">
+                <button class="btn btn-sm btn-outline-success">
+                  В общий список
+                </button>
+              </form>
+            {% else %}
+              <small class="text-muted">—</small>
+            {% endif %}
+          </td>
+        </tr>
+      {% endfor %}
+      {% if not wishlist_items %}
+        <tr>
+          <td colspan="5">Пока нет фильмов в списке «хочу посмотреть»</td>
+        </tr>
+      {% endif %}
+      </tbody>
+    </table>
+
     {% endblock %}
     """
 
@@ -283,12 +497,164 @@ def user_profile(user_id):
         user=user,
         ratings=ratings,
         avg_score=avg_score,
-        ratings_count=ratings_count
+        ratings_count=ratings_count,
+        wishlist_items=wishlist_items
     )
 
 
+@app.route('/user/<int:user_id>/wishlist/add', methods=['POST'])
+@login_required
+def add_wishlist_item(user_id):
+    if user_id != current_user.id:
+        flash('Нельзя редактировать чужой список «хочу посмотреть»', 'danger')
+        return redirect(url_for('user_profile', user_id=user_id))
+
+    title = request.form.get('title', '').strip()
+    year = request.form.get('year', '').strip()
+    director = request.form.get('director', '').strip()
+    note = request.form.get('note', '').strip()
+
+    if not title:
+        flash('Название фильма обязательно', 'danger')
+        return redirect(url_for('user_profile', user_id=user_id))
+
+    existing = WishlistItem.query.filter_by(user_id=current_user.id, title=title).first()
+    if existing:
+        flash('Этот фильм уже есть в списке «хочу посмотреть»', 'info')
+        return redirect(url_for('user_profile', user_id=user_id))
+
+    item = WishlistItem(
+        user_id=current_user.id,
+        title=title,
+        year=year or None,
+        director=director or None,
+        note=note or None
+    )
+    db.session.add(item)
+    db.session.commit()
+    flash('Фильм добавлен в список «хочу посмотреть»', 'success')
+    return redirect(url_for('user_profile', user_id=user_id))
+
+
+@app.route('/wishlist/<int:item_id>/delete', methods=['POST'])
+@login_required
+def delete_wishlist_item(item_id):
+    item = WishlistItem.query.get_or_404(item_id)
+    if item.user_id != current_user.id:
+        flash('Нельзя удалять чужие записи', 'danger')
+        return redirect(url_for('user_profile', user_id=item.user_id))
+
+    db.session.delete(item)
+    db.session.commit()
+    flash('Фильм удалён из списка «хочу посмотреть»', 'info')
+    return redirect(url_for('user_profile', user_id=item.user_id))
+
+
+@app.route('/wishlist/<int:item_id>/edit', methods=['GET', 'POST'])
+@login_required
+def edit_wishlist_item(item_id):
+    item = WishlistItem.query.get_or_404(item_id)
+    if item.user_id != current_user.id:
+        flash('Нельзя редактировать чужие записи', 'danger')
+        return redirect(url_for('user_profile', user_id=item.user_id))
+
+    template = """
+    {% extends "base.html" %}
+    {% block title %}Редактировать «хочу посмотреть»{% endblock %}
+    {% block content %}
+    <div class="d-flex justify-content-between align-items-center mb-3">
+      <h2 class="mb-0">Редактировать запись «хочу посмотреть»</h2>
+      <a href="{{ url_for('user_profile', user_id=item.user_id) }}" class="btn btn-outline-light btn-sm">
+        Назад к профилю
+      </a>
+    </div>
+
+    <form method="post">
+      <div class="mb-3">
+        <label class="form-label">Название фильма</label>
+        <input type="text" name="title" class="form-control" value="{{ item.title }}" required>
+      </div>
+      <div class="mb-3">
+        <label class="form-label">Год (опционально)</label>
+        <input type="text" name="year" class="form-control" value="{{ item.year or '' }}">
+      </div>
+      <div class="mb-3">
+        <label class="form-label">Режиссёр (опционально)</label>
+        <input type="text" name="director" class="form-control" value="{{ item.director or '' }}">
+      </div>
+      <div class="mb-3">
+        <label class="form-label">Заметка (опционально)</label>
+        <textarea name="note" class="form-control" rows="3">{{ item.note or '' }}</textarea>
+      </div>
+      <button type="submit" class="btn btn-primary">Сохранить</button>
+    </form>
+    {% endblock %}
+    """
+
+    if request.method == 'POST':
+        title = request.form.get('title', '').strip()
+        year = request.form.get('year', '').strip()
+        director = request.form.get('director', '').strip()
+        note = request.form.get('note', '').strip()
+
+        if not title:
+            flash('Название фильма обязательно', 'danger')
+            return render_template_string(template, item=item)
+
+        existing = (
+            WishlistItem.query
+            .filter_by(user_id=current_user.id, title=title)
+            .filter(WishlistItem.id != item.id)
+            .first()
+        )
+        if existing:
+            flash('У вас уже есть другая запись с таким названием', 'danger')
+            return render_template_string(template, item=item)
+
+        item.title = title
+        item.year = year or None
+        item.director = director or None
+        item.note = note or None
+
+        db.session.commit()
+        flash('Запись «хочу посмотреть» обновлена', 'success')
+        return redirect(url_for('user_profile', user_id=item.user_id))
+
+    return render_template_string(template, item=item)
+
+
+@app.route('/wishlist/<int:item_id>/to-movie', methods=['POST'])
+@login_required
+def wishlist_to_movie(item_id):
+    item = WishlistItem.query.get_or_404(item_id)
+    if item.user_id != current_user.id:
+        flash('Нельзя использовать чужую запись', 'danger')
+        return redirect(url_for('user_profile', user_id=item.user_id))
+
+    title = item.title.strip()
+    director = (item.director or '').strip()
+
+    if not title:
+        flash('У записи нет названия, фильм не создан', 'danger')
+        return redirect(url_for('user_profile', user_id=item.user_id))
+
+    movie = Movie(
+        title=title,
+        director=director or None,
+        poster=None,
+        suggested_by=current_user
+    )
+
+    db.session.add(movie)
+    db.session.delete(item)
+    db.session.commit()
+
+    flash('Фильм добавлен в общую таблицу и убран из «хочу посмотреть»', 'success')
+    return redirect(url_for('index'))
+
+
 # ---------------------------
-# Таблица лидеров: чьи фильмы лучше
+# Таблица лидеров
 # ---------------------------
 
 @app.route('/leaders')
@@ -365,7 +731,7 @@ def leaders():
 
 
 # ---------------------------
-# Роуты: фильмы и оценки
+# Список фильмов + действия
 # ---------------------------
 
 @app.route('/', methods=['GET'])
@@ -377,7 +743,12 @@ def index():
     {% block content %}
     <div class="d-flex justify-content-between align-items-center mb-3">
       <h2 class="mb-0">Рейтинг фильмов</h2>
-      <a href="{{ url_for('leaders') }}" class="btn btn-outline-light btn-sm">Таблица лидеров</a>
+      <div>
+        <a href="{{ url_for('leaders') }}" class="btn btn-outline-light btn-sm me-2">Таблица лидеров</a>
+        {% if current_user.is_admin %}
+          <a href="{{ url_for('admin_users') }}" class="btn btn-outline-warning btn-sm">Админ: пользователи</a>
+        {% endif %}
+      </div>
     </div>
 
     <form class="row g-2 mb-4" method="get">
@@ -397,7 +768,7 @@ def index():
       </div>
     </form>
 
-    <a href="{{ url_for('add_movie') }}" class="btn btn-success mb-3">Добавить фильм</a>
+    <a href="{{ url_for('add_movie') }}" class="btn btn_SUCCESS mb-3">Добавить фильм</a>
 
     <table class="table table-dark table-striped table-bordered align-middle">
       <thead>
@@ -465,6 +836,7 @@ def index():
           </th>
 
           <th>Кто предложил</th>
+          <th>Действия</th>
         </tr>
       </thead>
       <tbody>
@@ -475,7 +847,11 @@ def index():
               <img src="{{ url_for('static', filename='uploads/' ~ movie.poster) }}" class="img-fluid poster-thumb">
             {% endif %}
           </td>
-          <td><a class="link-light" href="{{ url_for('movie_detail', movie_id=movie.id) }}">{{ movie.title }}</a></td>
+          <td>
+            <a class="link-light" href="{{ url_for('movie_detail', movie_id=movie.id) }}">
+              {{ movie.title }}
+            </a>
+          </td>
           <td>{{ movie.director or '-' }}</td>
           <td>
             {% if movie.genres %}
@@ -503,6 +879,22 @@ def index():
               -
             {% endif %}
           </td>
+          <td>
+            {% if current_user.is_authenticated and (current_user.is_admin or movie.suggested_by_id == current_user.id) %}
+              <a href="{{ url_for('edit_movie', movie_id=movie.id) }}"
+                 class="btn btn-sm btn-outline-light me-1">
+                Редактировать
+              </a>
+              <form method="post"
+                    action="{{ url_for('delete_movie', movie_id=movie.id) }}"
+                    class="d-inline"
+                    onsubmit="return confirm('Точно удалить этот фильм и все его оценки?');">
+                <button class="btn btn-sm btn-outline-danger">Удалить</button>
+              </form>
+            {% else %}
+              <small class="text-muted">—</small>
+            {% endif %}
+          </td>
         </tr>
       {% endfor %}
       </tbody>
@@ -525,7 +917,6 @@ def index():
     if q_genre:
         query = query.join(Movie.genres).filter(Genre.name.ilike(f'%{q_genre}%'))
 
-    # сортировка
     if sort == 'title':
         order_col = Movie.title
     elif sort == 'director':
@@ -567,6 +958,10 @@ def index():
         direction=direction
     )
 
+
+# ---------------------------
+# Добавление/редактирование/удаление фильма
+# ---------------------------
 
 @app.route('/movies/add', methods=['GET', 'POST'])
 @login_required
@@ -666,6 +1061,103 @@ def add_movie():
     return render_template_string(template, all_genres=all_genres, all_users=all_users)
 
 
+@app.route('/movies/<int:movie_id>/edit', methods=['GET', 'POST'])
+@login_required
+def edit_movie(movie_id):
+    movie = Movie.query.options(joinedload(Movie.genres)).get_or_404(movie_id)
+
+    if not can_manage_movie(movie, current_user):
+        flash('У вас нет прав редактировать этот фильм', 'danger')
+        return redirect(url_for('movie_detail', movie_id=movie.id))
+
+    template = """
+    {% extends "base.html" %}
+    {% block title %}Редактировать фильм{% endblock %}
+    {% block content %}
+    <div class="d-flex justify-content-between align-items-center mb-3">
+      <h2 class="mb-0">Редактировать фильм</h2>
+      <a href="{{ url_for('movie_detail', movie_id=movie.id) }}" class="btn btn-outline-light btn-sm">Назад к фильму</a>
+    </div>
+
+    <form method="post" enctype="multipart/form-data">
+      <div class="mb-3">
+        <label class="form-label">Название</label>
+        <input type="text" name="title" class="form-control" value="{{ movie.title }}" required>
+      </div>
+      <div class="mb-3">
+        <label class="form-label">Режиссёр</label>
+        <input type="text" name="director" class="form-control" value="{{ movie.director or '' }}">
+      </div>
+      <div class="mb-3">
+        <label class="form-label">Жанры (через запятую)</label>
+        <input type="text" name="genres" class="form-control"
+               value="{{ genres_text }}"
+               placeholder="Например: боевик, научная фантастика, триллер">
+      </div>
+      <div class="mb-3">
+        <label class="form-label">Обложка (jpg/png)</label>
+        {% if movie.poster %}
+          <p class="mb-1"><small class="text-muted">Текущая обложка: {{ movie.poster }}</small></p>
+        {% endif %}
+        <input type="file" name="poster" class="form-control">
+        <small class="text-muted">Если не выбирать файл, останется старая обложка.</small>
+      </div>
+      <button type="submit" class="btn btn-primary">Сохранить</button>
+    </form>
+    {% endblock %}
+    """
+
+    if request.method == 'POST':
+        title = request.form['title'].strip()
+        director = request.form.get('director', '').strip()
+        genres_raw = request.form.get('genres', '')
+        poster_file = request.files.get('poster')
+
+        if not title:
+            flash('Название обязательно', 'danger')
+            genres_text = genres_raw
+            return render_template_string(template, movie=movie, genres_text=genres_text)
+
+        movie.title = title
+        movie.director = director or None
+
+        movie.genres.clear()
+        genre_names = parse_genre_names(genres_raw)
+        for name in genre_names:
+            g = get_or_create_genre(name)
+            movie.genres.append(g)
+
+        if poster_file and poster_file.filename and allowed_file(poster_file.filename):
+            filename = secure_filename(poster_file.filename)
+            os.makedirs(app.config['UPLOAD_FOLDER'], exist_ok=True)
+            save_path = os.path.join(app.config['UPLOAD_FOLDER'], filename)
+            poster_file.save(save_path)
+            movie.poster = filename
+
+        db.session.commit()
+        flash('Фильм обновлён', 'success')
+        return redirect(url_for('movie_detail', movie_id=movie.id))
+
+    genres_text = ', '.join(g.name for g in movie.genres)
+    return render_template_string(template, movie=movie, genres_text=genres_text)
+
+
+@app.route('/movies/<int:movie_id>/delete', methods=['POST'])
+@login_required
+def delete_movie(movie_id):
+    movie = Movie.query.get_or_404(movie_id)
+
+    if not can_manage_movie(movie, current_user):
+        flash('У вас нет прав удалять этот фильм', 'danger')
+        return redirect(url_for('movie_detail', movie_id=movie.id))
+
+    Rating.query.filter_by(movie_id=movie.id).delete()
+    db.session.delete(movie)
+    db.session.commit()
+    flash('Фильм удалён', 'info')
+    return redirect(url_for('index'))
+
+
 @app.route('/movies/<int:movie_id>', methods=['GET', 'POST'])
 @login_required
 def movie_detail(movie_id):
@@ -706,6 +1198,18 @@ def movie_detail(movie_id):
           {% endif %}
         </p>
         <p><strong>Средний балл:</strong> {% if avg_score %}⭐ {{ '%.1f' % avg_score }}{% else %}—{% endif %}</p>
+
+        {% if current_user.is_authenticated %}
+          <form method="post" action="{{ url_for('add_wishlist_item', user_id=current_user.id) }}" class="mb-3">
+            <input type="hidden" name="title" value="{{ movie.title }}">
+            <input type="hidden" name="year" value="">
+            <input type="hidden" name="director" value="{{ movie.director or '' }}">
+            <input type="hidden" name="note" value="">
+            <button class="btn btn-outline_WARNING btn-sm">
+              Добавить в «хочу посмотреть»
+            </button>
+          </form>
+        {% endif %}
 
         <hr>
 
@@ -818,7 +1322,7 @@ def movie_detail(movie_id):
     movie = Movie.query.options(joinedload(Movie.genres), joinedload(Movie.suggested_by)).get_or_404(movie_id)
     user_rating = Rating.query.filter_by(movie_id=movie.id, user_id=current_user.id).first()
 
-    if request.method == 'POST':
+    if request.method == 'POST' and 'score_precise' in request.form:
         score_str = request.form.get('score_precise') or request.form.get('score')
         try:
             score = float(score_str)
@@ -858,14 +1362,29 @@ def movie_detail(movie_id):
 
 
 # ---------------------------
-# Инициализация БД
+# Инициализация БД и базовый админ
 # ---------------------------
 
 def init_db():
-    """Создаёт таблицы, если их ещё нет."""
+    """Создаёт таблицы, если их ещё нет, и базового администратора."""
     db.create_all()
 
-# ВАЖНО: вызываем init_db при импорте, чтобы gunicorn на Railway создал таблицы
+    admin_username = 'Starec'
+    admin_display_name = 'Старец'
+    admin_password = 'Starec130499'
+
+    existing_admin = User.query.filter_by(username=admin_username).first()
+    if not existing_admin:
+        admin = User(
+            username=admin_username,
+            display_name=admin_display_name,
+            is_admin=True
+        )
+        admin.set_password(admin_password)
+        db.session.add(admin)
+        db.session.commit()
+
+
 with app.app_context():
     init_db()
 
