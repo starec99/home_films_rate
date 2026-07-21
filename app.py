@@ -1199,17 +1199,6 @@ def movie_detail(movie_id):
         </p>
         <p><strong>Средний балл:</strong> {% if avg_score %}⭐ {{ '%.1f' % avg_score }}{% else %}—{% endif %}</p>
 
-        {% if current_user.is_authenticated %}
-          <form method="post" action="{{ url_for('add_wishlist_item', user_id=current_user.id) }}" class="mb-3">
-            <input type="hidden" name="title" value="{{ movie.title }}">
-            <input type="hidden" name="year" value="">
-            <input type="hidden" name="director" value="{{ movie.director or '' }}">
-            <input type="hidden" name="note" value="">
-            <button class="btn btn-outline_WARNING btn-sm">
-              Добавить в «хочу посмотреть»
-            </button>
-          </form>
-        {% endif %}
 
         <hr>
 
