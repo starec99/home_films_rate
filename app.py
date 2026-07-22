@@ -1260,22 +1260,26 @@ def movie_detail(movie_id):
 
         <hr>
 
-        <h4>Оценки друзей</h4>
-        <ul class="list-group">
-          {% for r in all_ratings %}
-            <li class="list-group-item">
-              <strong>{{ r.user.display_name }}</strong> — {{ '%.1f' % r.score }}
-              {% if r.review %}
-                <br><small class="text-muted">{{ r.review }}</small>
-              {% endif %}
-            </li>
-          {% endfor %}
-          {% if not all_ratings %}
-            <li class="list-group-item">Пока нет оценок</li>
+<h4 class="text-light">Оценки друзей</h4>
+<div class="card bg-dark text-light mb-4">
+  <div class="card-body">
+    <ul class="list-group list-group-flush">
+      {% for r in all_ratings %}
+        <li class="list-group-item bg-dark text-light">
+          <strong>{{ r.user.display_name }}</strong> — {{ '%.1f' % r.score }}
+          {% if r.review %}
+            <br><small class="text-muted">{{ r.review }}</small>
           {% endif %}
-        </ul>
-      </div>
-    </div>
+        </li>
+      {% endfor %}
+      {% if not all_ratings %}
+        <li class="list-group-item bg-dark text-light">
+          Пока нет оценок
+        </li>
+      {% endif %}
+    </ul>
+  </div>
+</div>
 
     <script>
       document.addEventListener('DOMContentLoaded', function () {

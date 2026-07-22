@@ -33,6 +33,18 @@
         background-color: rgba(0, 0, 0, 0.85);
       }
     </style>
+    <style>
+  /* Глобально для тёмных списков */
+  .card.bg-dark,
+  .card.bg-dark .card-body,
+  .card.bg-dark .list-group-item {
+    color: #ffffff;
+  }
+
+  .card.bg-dark .text-muted {
+    color: rgba(255, 255, 255, 0.7) !important;
+  }
+</style>
     {% endblock styles %}
     {% endblock head %}
 </head>
