@@ -393,23 +393,6 @@ def user_profile(user_id):
 
     <hr>
 
-    <h4>Последние оценки</h4>
-    <ul class="list-group mb-4">
-      {% for r in ratings %}
-        <li class="list-group-item">
-          <strong>{{ r.movie.title }}</strong> — {{ '%.1f' % r.score }}
-          {% if r.review %}
-            <br><small class="text-muted">{{ r.review }}</small>
-          {% endif %}
-        </li>
-      {% endfor %}
-      {% if not ratings %}
-        <li class="list-group-item">Пока нет оценок</li>
-      {% endif %}
-    </ul>
-
-    <hr>
-
     <h4>Хочу посмотреть</h4>
     {% if current_user.id == user.id %}
       <form method="post" action="{{ url_for('add_wishlist_item', user_id=user.id) }}" class="mb-3">
@@ -963,6 +946,7 @@ def index():
 # Добавление/редактирование/удаление фильма
 # ---------------------------
 
+
 @app.route('/movies/add', methods=['GET', 'POST'])
 @login_required
 def add_movie():
@@ -989,10 +973,13 @@ def add_movie():
         <input type="text" name="genres" class="form-control"
                placeholder="Например: боевик, научная фантастика, триллер">
         {% if all_genres %}
-          <small class="text-muted">
+          <small class="text-muted d-block mt-2">
             Уже есть жанры:
             {% for g in all_genres %}
-              <span class="badge bg-secondary me-1">{{ g.name }}</span>
+              <span class="badge bg-secondary me-1 genre-badge"
+                    data-genre="{{ g.name }}">
+                {{ g.name }}
+              </span>
             {% endfor %}
           </small>
         {% endif %}
@@ -1016,6 +1003,36 @@ def add_movie():
       <button type="submit" class="btn btn-primary">Сохранить</button>
     </form>
     {% endblock %}
+
+    {% block scripts %}
+    {{ super() }}
+    <script>
+    document.addEventListener('DOMContentLoaded', function () {
+      const genreInput = document.querySelector('input[name="genres"]');
+      if (!genreInput) return;
+
+      document.querySelectorAll('.genre-badge').forEach(function (badge) {
+        badge.style.cursor = 'pointer';
+        badge.addEventListener('click', function () {
+          const genre = badge.dataset.genre;
+          if (!genre) return;
+
+          let current = genreInput.value || '';
+          let parts = current.split(',')
+            .map(function (p) { return p.trim(); })
+            .filter(function (p) { return p.length > 0; });
+
+          const lowered = parts.map(function (p) { return p.toLowerCase(); });
+          if (!lowered.includes(genre.toLowerCase())) {
+            parts.push(genre);
+          }
+
+          genreInput.value = parts.join(', ');
+        });
+      });
+    });
+    </script>
+    {% endblock scripts %}
     """
 
     if request.method == 'POST':
@@ -1042,7 +1059,7 @@ def add_movie():
 
             movie = Movie(
                 title=title,
-                director=director,
+                director=director or None,
                 poster=poster_filename,
                 suggested_by=suggested_user
             )
