@@ -1114,10 +1114,10 @@ def edit_movie(movie_id):
       <div class="mb-3">
         <label class="form-label">Обложка (jpg/png)</label>
         {% if movie.poster %}
-          <p class="mb-1"><small class="text-muted">Текущая обложка: {{ movie.poster }}</small></p>
+          <p class="mb-1"><small class="text-light">Текущая обложка: {{ movie.poster }}</small></p>
         {% endif %}
         <input type="file" name="poster" class="form-control">
-        <small class="text-muted">Если не выбирать файл, останется старая обложка.</small>
+        <small class="text-light">Если не выбирать файл, останется старая обложка.</small>
       </div>
       <button type="submit" class="btn btn-primary">Сохранить</button>
     </form>
